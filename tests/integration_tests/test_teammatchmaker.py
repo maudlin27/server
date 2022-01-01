@@ -40,9 +40,15 @@ async def queue_players_for_matchmaking(lobby_server):
 
     await asyncio.gather(*[
         proto.send_message({
+            "command": "set_party_factions",
+            "factions": ["uef"]
+        })
+        for proto in protos
+    ])
+    await asyncio.gather(*[
+        proto.send_message({
             "command": "game_matchmaking",
             "state": "start",
-            "faction": "uef",
             "queue_name": "tmm2v2"
         })
         for proto in protos
@@ -73,19 +79,19 @@ async def test_info_message(lobby_server):
         "command": "game_matchmaking",
         "state": "start",
         "faction": "uef",
-        "mod": "tmm2v2"
+        "queue_name": "tmm2v2"
     })
 
     msg = await read_until_command(proto, "matchmaker_info")
 
     assert msg["queues"]
     for queue in msg["queues"]:
-        boundaries = queue["boundary_80s"]
+        num_players = queue["num_players"]
 
         if queue["queue_name"] == "tmm2v2":
-            assert boundaries == [[300, 700]]
+            assert num_players == 1
         else:
-            assert boundaries == []
+            assert num_players == 0
 
 
 @fast_forward(10)
@@ -97,7 +103,7 @@ async def test_game_matchmaking(lobby_server):
     uid = set(msg["uid"] for msg in msgs)
     assert len(uid) == 1
     for msg in msgs:
-        assert msg["init_mode"] == 1
+        assert msg["game_type"] == "matchmaker"
         assert "None" not in msg["name"]
         assert msg["mod"] == "faf"
         assert msg["expected_players"] == 4
@@ -115,17 +121,26 @@ async def test_game_matchmaking_multiqueue(lobby_server):
     ])
 
     await protos[0].send_message({
+        "command": "set_party_factions",
+        "factions": ["uef"]
+    })
+    await protos[0].send_message({
         "command": "game_matchmaking",
         "state": "start",
-        "faction": "uef",
         "queue_name": "ladder1v1"
     })
     await read_until_command(protos[0], "search_info", state="start")
     await asyncio.gather(*[
         proto.send_message({
+            "command": "set_party_factions",
+            "factions": ["aeon"]
+        })
+        for proto in protos
+    ])
+    await asyncio.gather(*[
+        proto.send_message({
             "command": "game_matchmaking",
             "state": "start",
-            "faction": "aeon",
             "queue_name": "tmm2v2"
         })
         for proto in protos
@@ -142,7 +157,7 @@ async def test_game_matchmaking_multiqueue(lobby_server):
     uid = set(msg["uid"] for msg in msgs)
     assert len(uid) == 1
     for msg in msgs:
-        assert msg["init_mode"] == 1
+        assert msg["game_type"] == "matchmaker"
         assert "None" not in msg["name"]
         assert msg["mod"] == "faf"
         assert msg["expected_players"] == 4
@@ -222,7 +237,7 @@ async def test_game_matchmaking_with_parties(lobby_server):
     uid = set(msg["uid"] for msg in msgs)
     assert len(uid) == 1
     for i, msg in enumerate(msgs):
-        assert msg["init_mode"] == 1
+        assert msg["game_type"] == "matchmaker"
         assert "None" not in msg["name"]
         assert msg["mod"] == "faf"
         assert msg["expected_players"] == 4
@@ -290,7 +305,7 @@ async def test_newbie_matchmaking_with_parties(lobby_server):
     uid = set(msg["uid"] for msg in msgs)
     assert len(uid) == 1
     for msg in msgs:
-        assert msg["init_mode"] == 1
+        assert msg["game_type"] == "matchmaker"
         assert "None" not in msg["name"]
         assert msg["mod"] == "faf"
         assert msg["expected_players"] == 4
@@ -309,7 +324,6 @@ async def test_game_matchmaking_multiqueue_timeout(lobby_server):
     await protos[0].send_message({
         "command": "game_matchmaking",
         "state": "start",
-        "faction": "cybran",
         "queue_name": "ladder1v1"
     })
     await read_until_command(protos[0], "search_info", state="start")
@@ -317,7 +331,6 @@ async def test_game_matchmaking_multiqueue_timeout(lobby_server):
         proto.send_message({
             "command": "game_matchmaking",
             "state": "start",
-            "faction": "seraphim",
             "queue_name": "tmm2v2"
         })
         for proto in protos
@@ -333,6 +346,14 @@ async def test_game_matchmaking_multiqueue_timeout(lobby_server):
     # Don't send any GPGNet messages so the match times out
     await read_until_command(protos[0], "match_cancelled", timeout=120)
 
+    # Player's state is not reset immediately
+    await protos[0].send_message({
+        "command": "game_matchmaking",
+        "state": "start",
+    })
+    with pytest.raises(asyncio.TimeoutError):
+        await read_until_command(protos[1], "search_info", state="start", timeout=5)
+
     # Player's state is reset once they leave the game
     await protos[0].send_message({
         "command": "GameState",
@@ -342,7 +363,6 @@ async def test_game_matchmaking_multiqueue_timeout(lobby_server):
     await protos[0].send_message({
         "command": "game_matchmaking",
         "state": "start",
-        "faction": "uef"
     })
     await read_until_command(
         protos[0],
@@ -351,15 +371,6 @@ async def test_game_matchmaking_multiqueue_timeout(lobby_server):
         queue_name="ladder1v1",
         timeout=5
     )
-
-    # And not before they've left the game
-    await protos[1].send_message({
-        "command": "game_matchmaking",
-        "state": "start",
-        "faction": "uef"
-    })
-    with pytest.raises(asyncio.TimeoutError):
-        await read_until_command(protos[1], "search_info", state="start", timeout=5)
 
 
 @fast_forward(60)
@@ -382,7 +393,6 @@ async def test_game_matchmaking_multiqueue_multimatch(lobby_server):
         proto.send_message({
             "command": "game_matchmaking",
             "state": "start",
-            "faction": "uef",
             "queue_name": "ladder1v1"
         })
         for proto in protos[:2]
@@ -391,7 +401,6 @@ async def test_game_matchmaking_multiqueue_multimatch(lobby_server):
         proto.send_message({
             "command": "game_matchmaking",
             "state": "start",
-            "faction": "aeon",
             "queue_name": "tmm2v2"
         })
         for proto in protos
@@ -445,7 +454,6 @@ async def test_game_matchmaking_timeout(lobby_server):
     await protos[0].send_message({
         "command": "game_matchmaking",
         "state": "start",
-        "faction": "uef"
     })
     await read_until_command(
         protos[0],
@@ -454,15 +462,6 @@ async def test_game_matchmaking_timeout(lobby_server):
         queue_name="ladder1v1",
         timeout=5
     )
-
-    # And not before they've left the game
-    await protos[1].send_message({
-        "command": "game_matchmaking",
-        "state": "start",
-        "faction": "uef"
-    })
-    with pytest.raises(asyncio.TimeoutError):
-        await read_until_command(protos[1], "search_info", state="start", timeout=5)
 
 
 @fast_forward(120)
@@ -560,7 +559,7 @@ async def test_ratings_initialized_based_on_global(lobby_server):
         "command": "game_matchmaking",
         "state": "start",
         "faction": "uef",
-        "mod": "tmm2v2"
+        "queue_name": "tmm2v2"
     })
 
     # Need to connect another user to guarantee triggering a message containing
@@ -627,7 +626,7 @@ async def test_ratings_initialized_based_on_global_persisted(
         await proto.send_message({
             "command": "game_matchmaking",
             "state": "start",
-            "mod": "tmm2v2"
+            "queue_name": "tmm2v2"
         })
         await read_until_command(proto, "search_info")
 
@@ -714,7 +713,7 @@ async def test_party_cleanup_on_abort(lobby_server):
         await proto.send_message({
             "command": "game_matchmaking",
             "state": "start",
-            "mod": "tmm2v2"
+            "queue_name": "tmm2v2"
         })
         # The queue was successful. This would time out on failure.
         await read_until_command(proto, "search_info", state="start")
